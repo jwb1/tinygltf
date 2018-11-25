@@ -1062,7 +1062,8 @@ class TinyGLTF {
 #endif
 
 #ifdef _WIN32
-#include <windows.h>
+//#include <windows.h>
+extern "C" unsigned long ExpandEnvironmentStringsA(const char* lpSrc, char* lpDst, unsigned long nSize);
 #elif !defined(__ANDROID__)
 #include <wordexp.h>
 #endif
@@ -1749,7 +1750,7 @@ bool FileExists(const std::string &abs_filename, void *) {
 
 std::string ExpandFilePath(const std::string &filepath, void *) {
 #ifdef _WIN32
-  DWORD len = ExpandEnvironmentStringsA(filepath.c_str(), NULL, 0);
+  unsigned long len = ExpandEnvironmentStringsA(filepath.c_str(), NULL, 0);
   char *str = new char[len];
   ExpandEnvironmentStringsA(filepath.c_str(), str, len);
 
