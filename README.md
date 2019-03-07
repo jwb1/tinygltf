@@ -3,11 +3,13 @@
 `TinyGLTF` is a header only C++11 glTF 2.0 https://github.com/KhronosGroup/glTF library.
 
 `TinyGLTF` uses Niels Lohmann's json library(https://github.com/nlohmann/json), so now it requires C++11 compiler.
-If you are looking for old, C++03 version, please use `devel-picojson` branch.  
+If you are looking for old, C++03 version, please use `devel-picojson` branch.
 
 ## Status
 
-v2.0.0 release(22 Aug, 2018)! 
+v2.2.0 release(Support loading 16bit PNG. Sparse accessor support)
+v2.1.0 release(Draco support)
+v2.0.0 release(22 Aug, 2018)!
 
 ## Builds
 
@@ -38,16 +40,25 @@ v2.0.0 release(22 Aug, 2018)!
 * Image(Using stb_image)
   * [x] Parse BASE64 encoded embedded image data(DataURI).
   * [x] Load external image file.
-  * [x] PNG(8bit only)
-  * [x] JPEG(8bit only)
-  * [x] BMP
-  * [x] GIF
+  * [x] Load PNG(8bit and 16bit)
+  * [x] Load JPEG(8bit only)
+  * [x] Load BMP
+  * [x] Load GIF
   * [x] Custom Image decoder callback(e.g. for decoding OpenEXR image)
+* Morph traget
+  * [x] Sparse accessor
+* Load glTF from memory
+* Custom callback handler
+  * [x] Image load
+  * [x] Image save
+* Extensions
+  * [x] Draco mesh decoding
 
 ## Examples
 
 * [glview](examples/glview) : Simple glTF geometry viewer.
 * [validator](examples/validator) : Simple glTF validator with JSON schema.
+* [basic](examples/basic) : Basic glTF viewer with texturing support.
 
 ## Projects using TinyGLTF
 
@@ -61,11 +72,14 @@ v2.0.0 release(22 Aug, 2018)!
 
 * [ ] Write C++ code generator which emits C++ code from JSON schema for robust parsing.
 * [ ] Mesh Compression/decompression(Open3DGC, etc)
-  * [ ] Load Draco compressed mesh
+  * [x] Load Draco compressed mesh
+  * [ ] Save Draco compressed mesh
+  * [ ] Open3DGC?
 * [ ] Support `extensions` and `extras` property
 * [ ] HDR image?
   * [ ] OpenEXR extension through TinyEXR.
-* [ ] Write example and tests for `animation` and `skin` 
+* [ ] 16bit PNG support in Serialization
+* [ ] Write example and tests for `animation` and `skin`
 
 ## Licenses
 
@@ -95,13 +109,13 @@ Copy `stb_image.h`, `stb_image_write.h`, `json.hpp` and `tiny_gltf.h` to your pr
 
 using namespace tinygltf;
 
-Model model; 
+Model model;
 TinyGLTF loader;
 std::string err;
 std::string warn;
-  
+
 bool ret = loader.LoadASCIIFromFile(&model, &err, &warn, argv[1]);
-//bool ret = loader.LoadBinaryFromFile(&model, &err, &warn, argv[1]); // for binary glTF(.glb) 
+//bool ret = loader.LoadBinaryFromFile(&model, &err, &warn, argv[1]); // for binary glTF(.glb)
 
 if (!warn.empty()) {
   printf("Warn: %s\n", warn.c_str());
@@ -122,6 +136,13 @@ if (!ret) {
 * `TINYGLTF_NOEXCEPTION` : Disable C++ exception in JSON parsing. You can use `-fno-exceptions` or by defining the symbol `JSON_NOEXCEPTION` and `TINYGLTF_NOEXCEPTION`  to fully remove C++ exception codes when compiling TinyGLTF.
 * `TINYGLTF_NO_STB_IMAGE` : Do not load images with stb_image. Instead use `TinyGLTF::SetImageLoader(LoadimageDataFunction LoadImageData, void *user_data)` to set a callback for loading images.
 * `TINYGLTF_NO_STB_IMAGE_WRITE` : Do not write images with stb_image_write. Instead use `TinyGLTF::SetImageWriter(WriteimageDataFunction WriteImageData, void *user_data)` to set a callback for writing images.
+* `TINYGLTF_NO_EXTERNAL_IMAGE` : Do not try to load external image file. This option would be helpful if you do not want to load image files during glTF parsing.
+* `TINYGLTF_ANDROID_LOAD_FROM_ASSETS`: Load all files from packaged app assets instead of the regular file system. **Note:** You must pass a valid asset manager from your android app to `tinygltf::asset_manager` beforehand.
+* `TINYGLTF_ENABLE_DRACO`: Enable Draco compression. User must provide include path and link correspnding libraries in your project file.
+* `TINYGLTF_NO_INCLUDE_JSON `: Disable including `json.hpp` from within `tiny_gltf.h` because it has been already included before or you want to include it using custom path before including `tiny_gltf.h`.
+* `TINYGLTF_NO_INCLUDE_STB_IMAGE `: Disable including `stb_image.h` from within `tiny_gltf.h` because it has been already included before or you want to include it using custom path before including `tiny_gltf.h`.
+* `TINYGLTF_NO_INCLUDE_STB_IMAGE_WRITE `: Disable including `stb_image_write.h` from within `tiny_gltf.h` because it has been already included before or you want to include it using custom path before including `tiny_gltf.h`.
+
 
 ### Saving gltTF 2.0 model
 * [ ] Buffers.
