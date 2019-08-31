@@ -26,6 +26,11 @@
 // THE SOFTWARE.
 
 // Version:
+//  - v2.3.1 Set default value of minFilter and magFilter in Sampler to -1.
+//  - v2.3.0 Modified Material representation according to glTF 2.0 schema
+//           (and introduced TextureInfo class)
+//           Change the behavior of `Value::IsNumber`. It return true either the
+//           value is int or real.
 //  - v2.2.0 Add loading 16bit PNG support. Add Sparse accessor support(Thanks
 //  to @Ybalrid)
 //  - v2.1.0 Add draco compression.
@@ -46,6 +51,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <string>
 #include <vector>
@@ -157,7 +163,7 @@ AAssetManager *asset_manager = nullptr;
 
 typedef enum {
   NULL_TYPE = 0,
-  NUMBER_TYPE = 1,
+  REAL_TYPE = 1,
   INT_TYPE = 2,
   BOOL_TYPE = 3,
   STRING_TYPE = 4,
@@ -189,7 +195,7 @@ static inline int32_t GetComponentSizeInBytes(uint32_t componentType) {
   }
 }
 
-static inline int32_t GetTypeSizeInBytes(uint32_t ty) {
+static inline int32_t GetNumComponentsInType(uint32_t ty) {
   if (ty == TINYGLTF_TYPE_SCALAR) {
     return 1;
   } else if (ty == TINYGLTF_TYPE_VEC2) {
@@ -210,6 +216,7 @@ static inline int32_t GetTypeSizeInBytes(uint32_t ty) {
   }
 }
 
+// TODO(syoyo): Move these functions to TinyGLTF class
 bool IsDataURI(const std::string &in);
 bool DecodeDataURI(std::vector<unsigned char> *out, std::string &mime_type,
                    const std::string &in, size_t reqBytes, bool checkSize);
@@ -228,11 +235,18 @@ class Value {
   typedef std::vector<Value> Array;
   typedef std::map<std::string, Value> Object;
 
-  Value() : type_(NULL_TYPE) {}
+  Value()
+      : type_(NULL_TYPE),
+        int_value_(0),
+        real_value_(0.0),
+        boolean_value_(false) {}
 
   explicit Value(bool b) : type_(BOOL_TYPE) { boolean_value_ = b; }
-  explicit Value(int i) : type_(INT_TYPE) { int_value_ = i; }
-  explicit Value(double n) : type_(NUMBER_TYPE) { number_value_ = n; }
+  explicit Value(int i) : type_(INT_TYPE) {
+    int_value_ = i;
+    real_value_ = i;
+  }
+  explicit Value(double n) : type_(REAL_TYPE) { real_value_ = n; }
   explicit Value(const std::string &s) : type_(STRING_TYPE) {
     string_value_ = s;
   }
@@ -253,7 +267,9 @@ class Value {
 
   bool IsInt() const { return (type_ == INT_TYPE); }
 
-  bool IsNumber() const { return (type_ == NUMBER_TYPE); }
+  bool IsNumber() const { return (type_ == REAL_TYPE) || (type_ == INT_TYPE); }
+
+  bool IsReal() const { return (type_ == REAL_TYPE); }
 
   bool IsString() const { return (type_ == STRING_TYPE); }
 
@@ -262,6 +278,24 @@ class Value {
   bool IsArray() const { return (type_ == ARRAY_TYPE); }
 
   bool IsObject() const { return (type_ == OBJECT_TYPE); }
+
+  // Use this function if you want to have number value as double.
+  double GetNumberAsDouble() const {
+    if (type_ == INT_TYPE) {
+      return double(int_value_);
+    } else {
+      return real_value_;
+    }
+  }
+
+  // Use this function if you want to have number value as int.
+  double GetNumberAsInt() const {
+    if (type_ == REAL_TYPE) {
+      return int(real_value_);
+    } else {
+      return int_value_;
+    }
+  }
 
   // Accessor
   template <typename T>
@@ -317,15 +351,15 @@ class Value {
   bool operator==(const tinygltf::Value &other) const;
 
  protected:
-  int type_;
+  int type_ = NULL_TYPE;
 
-  int int_value_;
-  double number_value_;
+  int int_value_ = 0;
+  double real_value_ = 0.0;
   std::string string_value_;
   std::vector<unsigned char> binary_value_;
   Array array_value_;
   Object object_value_;
-  bool boolean_value_;
+  bool boolean_value_ = false;
 };
 
 #ifdef __clang__
@@ -342,7 +376,7 @@ class Value {
     return var;                                   \
   }
 TINYGLTF_VALUE_GET(bool, boolean_value_)
-TINYGLTF_VALUE_GET(double, number_value_)
+TINYGLTF_VALUE_GET(double, real_value_)
 TINYGLTF_VALUE_GET(int, int_value_)
 TINYGLTF_VALUE_GET(std::string, string_value_)
 TINYGLTF_VALUE_GET(std::vector<unsigned char>, binary_value_)
@@ -359,6 +393,8 @@ TINYGLTF_VALUE_GET(Value::Object, object_value_)
 /// Agregate object for representing a color
 using ColorValue = std::array<double, 4>;
 
+// === legacy interface ====
+// TODO(syoyo): Deprecate `Parameter` class.
 struct Parameter {
   bool bool_value = false;
   bool has_number_value = false;
@@ -366,6 +402,7 @@ struct Parameter {
   std::vector<double> number_array;
   std::map<std::string, double> json_double_value;
   double number_value = 0.0;
+
   // context sensitive methods. depending the type of the Parameter you are
   // accessing, these are either valid or not
   // If this parameter represent a texture map in a material, will return the
@@ -390,7 +427,32 @@ struct Parameter {
     if (it != std::end(json_double_value)) {
       return int(it->second);
     }
+    // As per the spec, if texCoord is ommited, this parameter is 0
     return 0;
+  }
+
+  /// Return the scale of a texture if this Parameter is a normal texture map.
+  /// Returned value is only valid if the parameter represent a normal texture
+  /// from a material
+  double TextureScale() const {
+    const auto it = json_double_value.find("scale");
+    if (it != std::end(json_double_value)) {
+      return it->second;
+    }
+    // As per the spec, if scale is ommited, this paramter is 1
+    return 1;
+  }
+
+  /// Return the strength of a texture if this Parameter is a an occlusion map.
+  /// Returned value is only valid if the parameter represent an occlusion map
+  /// from a material
+  double TextureStrength() const {
+    const auto it = json_double_value.find("strength");
+    if (it != std::end(json_double_value)) {
+      return it->second;
+    }
+    // As per the spec, if strenghth is ommited, this parameter is 1
+    return 1;
   }
 
   /// Material factor, like the roughness or metalness of a material
@@ -429,6 +491,7 @@ struct AnimationChannel {
   std::string target_path;  // required in ["translation", "rotation", "scale",
                             // "weights"]
   Value extras;
+  ExtensionMap extensions;
 
   AnimationChannel() : sampler(-1), target_node(-1) {}
   bool operator==(const AnimationChannel &) const;
@@ -437,7 +500,8 @@ struct AnimationChannel {
 struct AnimationSampler {
   int input;                  // required
   int output;                 // required
-  std::string interpolation;  // "LINEAR", "STEP","CUBICSPLINE" or user defined string. default "LINEAR"
+  std::string interpolation;  // "LINEAR", "STEP","CUBICSPLINE" or user defined
+                              // string. default "LINEAR"
   Value extras;
 
   AnimationSampler() : input(-1), output(-1), interpolation("LINEAR") {}
@@ -449,6 +513,7 @@ struct Animation {
   std::vector<AnimationChannel> channels;
   std::vector<AnimationSampler> samplers;
   Value extras;
+  ExtensionMap extensions;
 
   bool operator==(const Animation &) const;
 };
@@ -468,20 +533,26 @@ struct Skin {
 
 struct Sampler {
   std::string name;
-  int minFilter;  // ["NEAREST", "LINEAR", "NEAREST_MIPMAP_LINEAR",
-                  // "LINEAR_MIPMAP_NEAREST", "NEAREST_MIPMAP_LINEAR",
-                  // "LINEAR_MIPMAP_LINEAR"]
-  int magFilter;  // ["NEAREST", "LINEAR"]
-  int wrapS;      // ["CLAMP_TO_EDGE", "MIRRORED_REPEAT", "REPEAT"], default
-                  // "REPEAT"
-  int wrapT;      // ["CLAMP_TO_EDGE", "MIRRORED_REPEAT", "REPEAT"], default
-                  // "REPEAT"
-  int wrapR;      // TinyGLTF extension
+  // glTF 2.0 spec does not define default value for `minFilter` and
+  // `magFilter`. Set -1 in TinyGLTF(issue #186)
+  int minFilter =
+      -1;  // optional. -1 = no filter defined. ["NEAREST", "LINEAR",
+           // "NEAREST_MIPMAP_LINEAR", "LINEAR_MIPMAP_NEAREST",
+           // "NEAREST_MIPMAP_LINEAR", "LINEAR_MIPMAP_LINEAR"]
+  int magFilter =
+      -1;  // optional. -1 = no filter defined. ["NEAREST", "LINEAR"]
+  int wrapS =
+      TINYGLTF_TEXTURE_WRAP_REPEAT;  // ["CLAMP_TO_EDGE", "MIRRORED_REPEAT",
+                                     // "REPEAT"], default "REPEAT"
+  int wrapT =
+      TINYGLTF_TEXTURE_WRAP_REPEAT;  // ["CLAMP_TO_EDGE", "MIRRORED_REPEAT",
+                                     // "REPEAT"], default "REPEAT"
+  int wrapR = TINYGLTF_TEXTURE_WRAP_REPEAT;  // TinyGLTF extension
   Value extras;
 
   Sampler()
-      : minFilter(TINYGLTF_TEXTURE_FILTER_LINEAR_MIPMAP_LINEAR),
-        magFilter(TINYGLTF_TEXTURE_FILTER_LINEAR),
+      : minFilter(-1),
+        magFilter(-1),
         wrapS(TINYGLTF_TEXTURE_WRAP_REPEAT),
         wrapT(TINYGLTF_TEXTURE_WRAP_REPEAT),
         wrapR(TINYGLTF_TEXTURE_WRAP_REPEAT) {}
@@ -533,17 +604,87 @@ struct Texture {
   bool operator==(const Texture &) const;
 };
 
+struct TextureInfo {
+  int index = -1;  // required.
+  int texCoord;    // The set index of texture's TEXCOORD attribute used for
+                   // texture coordinate mapping.
+
+  Value extras;
+  ExtensionMap extensions;
+
+  TextureInfo() : index(-1), texCoord(0) {}
+  bool operator==(const TextureInfo &) const;
+};
+
+struct NormalTextureInfo {
+  int index = -1;  // required
+  int texCoord;    // The set index of texture's TEXCOORD attribute used for
+                   // texture coordinate mapping.
+  double scale;    // scaledNormal = normalize((<sampled normal texture value>
+                   // * 2.0 - 1.0) * vec3(<normal scale>, <normal scale>, 1.0))
+
+  Value extras;
+  ExtensionMap extensions;
+
+  NormalTextureInfo() : index(-1), texCoord(0), scale(1.0) {}
+  bool operator==(const NormalTextureInfo &) const;
+};
+
+struct OcclusionTextureInfo {
+  int index = -1;   // required
+  int texCoord;     // The set index of texture's TEXCOORD attribute used for
+                    // texture coordinate mapping.
+  double strength;  // occludedColor = lerp(color, color * <sampled occlusion
+                    // texture value>, <occlusion strength>)
+
+  Value extras;
+  ExtensionMap extensions;
+
+  OcclusionTextureInfo() : index(-1), texCoord(0), strength(1.0) {}
+  bool operator==(const OcclusionTextureInfo &) const;
+};
+
+// pbrMetallicRoughness class defined in glTF 2.0 spec.
+struct PbrMetallicRoughness {
+  std::vector<double> baseColorFactor;  // len = 4. default [1,1,1,1]
+  TextureInfo baseColorTexture;
+  double metallicFactor;   // default 1
+  double roughnessFactor;  // default 1
+  TextureInfo metallicRoughnessTexture;
+
+  Value extras;
+  ExtensionMap extensions;
+
+  PbrMetallicRoughness() : metallicFactor(1.0), roughnessFactor(1.0) {}
+  bool operator==(const PbrMetallicRoughness &) const;
+};
+
 // Each extension should be stored in a ParameterMap.
 // members not in the values could be included in the ParameterMap
 // to keep a single material model
 struct Material {
   std::string name;
 
-  ParameterMap values;            // PBR metal/roughness workflow
-  ParameterMap additionalValues;  // normal/occlusion/emissive values
+  std::vector<double> emissiveFactor;  // length 3. default [0, 0, 0]
+  std::string alphaMode;               // default "OPAQUE"
+  double alphaCutoff;                  // default 0.5
+  bool doubleSided;                    // default false;
+
+  PbrMetallicRoughness pbrMetallicRoughness;
+
+  NormalTextureInfo normalTexture;
+  OcclusionTextureInfo occlusionTexture;
+  TextureInfo emissiveTexture;
+
+  // For backward compatibility
+  // TODO(syoyo): Remove `values` and `additionalValues` in the next release.
+  ParameterMap values;
+  ParameterMap additionalValues;
 
   ExtensionMap extensions;
   Value extras;
+
+  Material() : alphaMode("OPAQUE"), alphaCutoff(0.5), doubleSided(false) {}
 
   bool operator==(const Material &) const;
 };
@@ -604,12 +745,12 @@ struct Accessor {
         return -1;
       }
 
-      int typeSizeInBytes = GetTypeSizeInBytes(static_cast<uint32_t>(type));
-      if (typeSizeInBytes <= 0) {
+      int numComponents = GetNumComponentsInType(static_cast<uint32_t>(type));
+      if (numComponents <= 0) {
         return -1;
       }
 
-      return componentSizeInBytes * typeSizeInBytes;
+      return componentSizeInBytes * numComponents;
     } else {
       // Check if byteStride is a mulple of the size of the accessor's component
       // type.
@@ -717,6 +858,7 @@ class Node {
  public:
   Node() : camera(-1), skin(-1), mesh(-1) {}
 
+  // TODO(syoyo): Could use `default`
   Node(const Node &rhs) {
     camera = rhs.camera;
 
@@ -734,6 +876,9 @@ class Node {
     extras = rhs.extras;
   }
   ~Node() {}
+
+  Node &operator=(const Node &rhs) = default;
+
   bool operator==(const Node &) const;
 
   int camera;  // the index of the camera referenced by this node
@@ -783,18 +928,43 @@ struct Scene {
   bool operator==(const Scene &) const;
 };
 
+struct SpotLight {
+  double innerConeAngle;
+  double outerConeAngle;
+
+  SpotLight() : innerConeAngle(0.0), outerConeAngle(0.7853981634) {}
+
+  bool operator==(const SpotLight &) const;
+
+  ExtensionMap extensions;
+  Value extras;
+};
+
 struct Light {
   std::string name;
   std::vector<double> color;
+  double intensity;
   std::string type;
+  double range;
+  SpotLight spot;
+
+  Light() : intensity(1.0), range(0.0) {}
 
   bool operator==(const Light &) const;
+
+  ExtensionMap extensions;
+  Value extras;
 };
 
 class Model {
  public:
   Model() {}
+
+  Model(const Model &) = default;
+  Model &operator=(const Model &) = default;
+
   ~Model() {}
+
   bool operator==(const Model &) const;
 
   std::vector<Accessor> accessors;
@@ -911,6 +1081,9 @@ bool WriteWholeFile(std::string *err, const std::string &filepath,
                     const std::vector<unsigned char> &contents, void *);
 #endif
 
+///
+/// glTF Parser/Serialier context.
+///
 class TinyGLTF {
  public:
 #ifdef __clang__
@@ -968,6 +1141,12 @@ class TinyGLTF {
                             unsigned int check_sections = REQUIRE_VERSION);
 
   ///
+  /// Write glTF to stream, buffers and images will be embeded
+  ///
+  bool WriteGltfSceneToStream(Model *model, std::ostream &stream,
+                              bool prettyPrint, bool writeBinary);
+
+  ///
   /// Write glTF to file.
   ///
   bool WriteGltfSceneToFile(Model *model, const std::string &filename,
@@ -989,6 +1168,21 @@ class TinyGLTF {
   ///
   void SetFsCallbacks(FsCallbacks callbacks);
 
+  ///
+  /// Set serializing default values(default = false).
+  /// When true, default values are force serialized to .glTF.
+  /// This may be helpfull if you want to serialize a full description of glTF
+  /// data.
+  ///
+  /// TODO(LTE): Supply parsing option as function arguments to
+  /// `LoadASCIIFromFile()` and others, not by a class method
+  ///
+  void SetSerializeDefaultValues(const bool enabled) {
+    serialize_default_values_ = enabled;
+  }
+
+  bool GetSerializeDefaultValues() const { return serialize_default_values_; }
+
  private:
   ///
   /// Loads glTF asset from string(memory).
@@ -1000,9 +1194,11 @@ class TinyGLTF {
                       const char *str, const unsigned int length,
                       const std::string &base_dir, unsigned int check_sections);
 
-  const unsigned char *bin_data_;
-  size_t bin_size_;
-  bool is_binary_;
+  const unsigned char *bin_data_ = nullptr;
+  size_t bin_size_ = 0;
+  bool is_binary_ = false;
+
+  bool serialize_default_values_ = false;  ///< Serialize default values?
 
   FsCallbacks fs = {
 #ifndef TINYGLTF_NO_FS
@@ -1098,6 +1294,9 @@ class TinyGLTF {
 #if __has_warning("-Wmismatched-tags")
 #pragma clang diagnostic ignored "-Wmismatched-tags"
 #endif
+#if __has_warning("-Wextra-semi-stmt")
+#pragma clang diagnostic ignored "-Wextra-semi-stmt"
+#endif
 #endif
 
 // Disable GCC warnigs
@@ -1172,7 +1371,7 @@ static bool Equals(const tinygltf::Value &one, const tinygltf::Value &other) {
       return true;
     case BOOL_TYPE:
       return one.Get<bool>() == other.Get<bool>();
-    case NUMBER_TYPE:
+    case REAL_TYPE:
       return TINYGLTF_DOUBLE_EQUAL(one.Get<double>(), other.Get<double>());
     case INT_TYPE:
       return one.Get<int>() == other.Get<int>();
@@ -1226,11 +1425,12 @@ bool Accessor::operator==(const Accessor &other) const {
          this->normalized == other.normalized && this->type == other.type;
 }
 bool Animation::operator==(const Animation &other) const {
-  return this->channels == other.channels && this->extras == other.extras &&
+  return this->channels == other.channels &&
+         this->extensions == other.extensions && this->extras == other.extras &&
          this->name == other.name && this->samplers == other.samplers;
 }
 bool AnimationChannel::operator==(const AnimationChannel &other) const {
-  return this->extras == other.extras &&
+  return this->extensions == other.extensions && this->extras == other.extras &&
          this->target_node == other.target_node &&
          this->target_path == other.target_path &&
          this->sampler == other.sampler;
@@ -1275,9 +1475,18 @@ bool Light::operator==(const Light &other) const {
          this->type == other.type;
 }
 bool Material::operator==(const Material &other) const {
-  return this->additionalValues == other.additionalValues &&
-         this->extensions == other.extensions && this->extras == other.extras &&
-         this->name == other.name && this->values == other.values;
+  return (this->pbrMetallicRoughness == other.pbrMetallicRoughness) &&
+         (this->normalTexture == other.normalTexture) &&
+         (this->occlusionTexture == other.occlusionTexture) &&
+         (this->emissiveTexture == other.emissiveTexture) &&
+         Equals(this->emissiveFactor, other.emissiveFactor) &&
+         (this->alphaMode == other.alphaMode) &&
+         TINYGLTF_DOUBLE_EQUAL(this->alphaCutoff, other.alphaCutoff) &&
+         (this->doubleSided == other.doubleSided) &&
+         (this->extensions == other.extensions) &&
+         (this->extras == other.extras) && (this->values == other.values) &&
+         (this->additionalValues == other.additionalValues) &&
+         (this->name == other.name);
 }
 bool Mesh::operator==(const Mesh &other) const {
   return this->extensions == other.extensions && this->extras == other.extras &&
@@ -1307,6 +1516,11 @@ bool Node::operator==(const Node &other) const {
          Equals(this->scale, other.scale) && this->skin == other.skin &&
          Equals(this->translation, other.translation) &&
          Equals(this->weights, other.weights);
+}
+bool SpotLight::operator==(const SpotLight &other) const {
+  return this->extensions == other.extensions && this->extras == other.extras &&
+         TINYGLTF_DOUBLE_EQUAL(this->innerConeAngle, other.innerConeAngle) &&
+         TINYGLTF_DOUBLE_EQUAL(this->outerConeAngle, other.outerConeAngle);
 }
 bool OrthographicCamera::operator==(const OrthographicCamera &other) const {
   return this->extensions == other.extensions && this->extras == other.extras &&
@@ -1359,7 +1573,6 @@ bool Sampler::operator==(const Sampler &other) const {
 bool Scene::operator==(const Scene &other) const {
   return this->extensions == other.extensions && this->extras == other.extras &&
          this->name == other.name && this->nodes == other.nodes;
-  ;
 }
 bool Skin::operator==(const Skin &other) const {
   return this->inverseBindMatrices == other.inverseBindMatrices &&
@@ -1370,6 +1583,28 @@ bool Texture::operator==(const Texture &other) const {
   return this->extensions == other.extensions && this->extras == other.extras &&
          this->name == other.name && this->sampler == other.sampler &&
          this->source == other.source;
+}
+bool TextureInfo::operator==(const TextureInfo &other) const {
+  return this->extensions == other.extensions && this->extras == other.extras &&
+         this->index == other.index && this->texCoord == other.texCoord;
+}
+bool NormalTextureInfo::operator==(const NormalTextureInfo &other) const {
+  return this->extensions == other.extensions && this->extras == other.extras &&
+         this->index == other.index && this->texCoord == other.texCoord &&
+         TINYGLTF_DOUBLE_EQUAL(this->scale, other.scale);
+}
+bool OcclusionTextureInfo::operator==(const OcclusionTextureInfo &other) const {
+  return this->extensions == other.extensions && this->extras == other.extras &&
+         this->index == other.index && this->texCoord == other.texCoord &&
+         TINYGLTF_DOUBLE_EQUAL(this->strength, other.strength);
+}
+bool PbrMetallicRoughness::operator==(const PbrMetallicRoughness &other) const {
+  return this->extensions == other.extensions && this->extras == other.extras &&
+         (this->baseColorTexture == other.baseColorTexture) &&
+         (this->metallicRoughnessTexture == other.metallicRoughnessTexture) &&
+         Equals(this->baseColorFactor, other.baseColorFactor) &&
+         TINYGLTF_DOUBLE_EQUAL(this->metallicFactor, other.metallicFactor) &&
+         TINYGLTF_DOUBLE_EQUAL(this->roughnessFactor, other.roughnessFactor);
 }
 bool Value::operator==(const Value &other) const {
   return Equals(*this, other);
@@ -1473,15 +1708,9 @@ std::string base64_decode(std::string const &s);
 
 #ifdef __clang__
 #pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wexit-time-destructors"
-#pragma clang diagnostic ignored "-Wglobal-constructors"
 #pragma clang diagnostic ignored "-Wsign-conversion"
 #pragma clang diagnostic ignored "-Wconversion"
 #endif
-static const std::string base64_chars =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "abcdefghijklmnopqrstuvwxyz"
-    "0123456789+/";
 
 static inline bool is_base64(unsigned char c) {
   return (isalnum(c) || (c == '+') || (c == '/'));
@@ -1494,6 +1723,11 @@ std::string base64_encode(unsigned char const *bytes_to_encode,
   int j = 0;
   unsigned char char_array_3[3];
   unsigned char char_array_4[4];
+
+  const char *base64_chars =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      "abcdefghijklmnopqrstuvwxyz"
+      "0123456789+/";
 
   while (in_len--) {
     char_array_3[i++] = *(bytes_to_encode++);
@@ -1534,6 +1768,11 @@ std::string base64_decode(std::string const &encoded_string) {
   int in_ = 0;
   unsigned char char_array_4[4], char_array_3[3];
   std::string ret;
+
+  const std::string base64_chars =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      "abcdefghijklmnopqrstuvwxyz"
+      "0123456789+/";
 
   while (in_len-- && (encoded_string[in_] != '=') &&
          is_base64(encoded_string[in_])) {
@@ -1656,7 +1895,7 @@ bool LoadImageData(Image *image, const int image_idx, std::string *err,
   (void)user_data;
   (void)warn;
 
-  int w, h, comp, req_comp;
+  int w = 0, h = 0, comp = 0, req_comp = 0;
 
   unsigned char *data = nullptr;
 
@@ -1673,8 +1912,8 @@ bool LoadImageData(Image *image, const int image_idx, std::string *err,
   // the Image metadata to signal that this image uses 2 bytes (16bits) per
   // channel:
   if (stbi_is_16_bit_from_memory(bytes, size)) {
-    data = (unsigned char *)stbi_load_16_from_memory(bytes, size, &w, &h, &comp,
-                                                     req_comp);
+    data = reinterpret_cast<unsigned char *>(
+        stbi_load_16_from_memory(bytes, size, &w, &h, &comp, req_comp));
     if (data) {
       bits = 16;
       pixel_type = TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT;
@@ -1701,7 +1940,7 @@ bool LoadImageData(Image *image, const int image_idx, std::string *err,
     return false;
   }
 
-  if (w < 1 || h < 1) {
+  if ((w < 1) || (h < 1)) {
     stbi_image_free(data);
     if (err) {
       (*err) += "Invalid image data for image[" + std::to_string(image_idx) +
@@ -1739,7 +1978,7 @@ bool LoadImageData(Image *image, const int image_idx, std::string *err,
   image->component = req_comp;
   image->bits = bits;
   image->pixel_type = pixel_type;
-  image->image.resize(static_cast<size_t>(w * h * req_comp) * (bits / 8));
+  image->image.resize(static_cast<size_t>(w * h * req_comp) * size_t(bits / 8));
   std::copy(data, data + w * h * req_comp * (bits / 8), image->image.begin());
   stbi_image_free(data);
 
@@ -2797,6 +3036,65 @@ static bool ParseTexture(Texture *texture, std::string *err, const json &o,
   return true;
 }
 
+static bool ParseTextureInfo(TextureInfo *texinfo, std::string *err,
+                             const json &o) {
+  if (texinfo == nullptr) {
+    return false;
+  }
+
+  if (!ParseIntegerProperty(&texinfo->index, err, o, "index",
+                            /* required */ true, "TextureInfo")) {
+    return false;
+  }
+
+  ParseIntegerProperty(&texinfo->texCoord, err, o, "texCoord", false);
+
+  ParseExtensionsProperty(&texinfo->extensions, err, o);
+  ParseExtrasProperty(&texinfo->extras, o);
+
+  return true;
+}
+
+static bool ParseNormalTextureInfo(NormalTextureInfo *texinfo, std::string *err,
+                                   const json &o) {
+  if (texinfo == nullptr) {
+    return false;
+  }
+
+  if (!ParseIntegerProperty(&texinfo->index, err, o, "index",
+                            /* required */ true, "NormalTextureInfo")) {
+    return false;
+  }
+
+  ParseIntegerProperty(&texinfo->texCoord, err, o, "texCoord", false);
+  ParseNumberProperty(&texinfo->scale, err, o, "scale", false);
+
+  ParseExtensionsProperty(&texinfo->extensions, err, o);
+  ParseExtrasProperty(&texinfo->extras, o);
+
+  return true;
+}
+
+static bool ParseOcclusionTextureInfo(OcclusionTextureInfo *texinfo,
+                                      std::string *err, const json &o) {
+  if (texinfo == nullptr) {
+    return false;
+  }
+
+  if (!ParseIntegerProperty(&texinfo->index, err, o, "index",
+                            /* required */ true, "NormalTextureInfo")) {
+    return false;
+  }
+
+  ParseIntegerProperty(&texinfo->texCoord, err, o, "texCoord", false);
+  ParseNumberProperty(&texinfo->strength, err, o, "strength", false);
+
+  ParseExtensionsProperty(&texinfo->extensions, err, o);
+  ParseExtrasProperty(&texinfo->extras, o);
+
+  return true;
+}
+
 static bool ParseBuffer(Buffer *buffer, std::string *err, const json &o,
                         FsCallbacks *fs, const std::string &basedir,
                         bool is_binary = false,
@@ -3073,7 +3371,7 @@ static bool ParseAccessor(Accessor *accessor, std::string *err, const json &o) {
     if (componentType >= TINYGLTF_COMPONENT_TYPE_BYTE &&
         componentType <= TINYGLTF_COMPONENT_TYPE_DOUBLE) {
       // OK
-      accessor->componentType = componentType;
+      accessor->componentType = int(componentType);
     } else {
       std::stringstream ss;
       ss << "Invalid `componentType` in accessor. Got " << componentType
@@ -3368,13 +3666,6 @@ static bool ParseMesh(Mesh *mesh, Model *model, std::string *err,
   return true;
 }
 
-static bool ParseLight(Light *light, std::string *err, const json &o) {
-  ParseStringProperty(&light->name, err, o, "name", false);
-  ParseNumberArrayProperty(&light->color, err, o, "color", false);
-  ParseStringProperty(&light->type, err, o, "type", false);
-  return true;
-}
-
 static bool ParseNode(Node *node, std::string *err, const json &o) {
   ParseStringProperty(&node->name, err, o, "name", false);
 
@@ -3400,15 +3691,123 @@ static bool ParseNode(Node *node, std::string *err, const json &o) {
   node->children.clear();
   ParseIntegerArrayProperty(&node->children, err, o, "children", false);
 
+  ParseNumberArrayProperty(&node->weights, err, o, "weights", false);
+
   ParseExtensionsProperty(&node->extensions, err, o);
   ParseExtrasProperty(&(node->extras), o);
 
   return true;
 }
 
+static bool ParsePbrMetallicRoughness(PbrMetallicRoughness *pbr,
+                                      std::string *err, const json &o) {
+  if (pbr == nullptr) {
+    return false;
+  }
+
+  std::vector<double> baseColorFactor;
+  if (ParseNumberArrayProperty(&baseColorFactor, err, o, "baseColorFactor",
+                               /* required */ false)) {
+    if (baseColorFactor.size() != 4) {
+      if (err) {
+        (*err) +=
+            "Array length of `baseColorFactor` parameter in "
+            "pbrMetallicRoughness must be 4, but got " +
+            std::to_string(baseColorFactor.size()) + "\n";
+      }
+      return false;
+    }
+  } else {
+    // fill with default values
+    baseColorFactor = {1.0, 1.0, 1.0, 1.0};
+  }
+  pbr->baseColorFactor = baseColorFactor;
+
+  {
+    json::const_iterator it = o.find("baseColorTexture");
+    if (it != o.end()) {
+      ParseTextureInfo(&pbr->baseColorTexture, err, it.value());
+    }
+  }
+
+  {
+    json::const_iterator it = o.find("metallicRoughnessTexture");
+    if (it != o.end()) {
+      ParseTextureInfo(&pbr->metallicRoughnessTexture, err, it.value());
+    }
+  }
+
+  ParseNumberProperty(&pbr->metallicFactor, err, o, "metallicFactor", false);
+  ParseNumberProperty(&pbr->roughnessFactor, err, o, "roughnessFactor", false);
+
+  ParseExtensionsProperty(&pbr->extensions, err, o);
+  ParseExtrasProperty(&pbr->extras, o);
+
+  return true;
+}
+
 static bool ParseMaterial(Material *material, std::string *err, const json &o) {
+  ParseStringProperty(&material->name, err, o, "name", /* required */ false);
+
+  if (ParseNumberArrayProperty(&material->emissiveFactor, err, o,
+                               "emissiveFactor",
+                               /* required */ false)) {
+    if (material->emissiveFactor.size() != 3) {
+      if (err) {
+        (*err) +=
+            "Array length of `emissiveFactor` parameter in "
+            "material must be 3, but got " +
+            std::to_string(material->emissiveFactor.size()) + "\n";
+      }
+      return false;
+    }
+  } else {
+    // fill with default values
+    material->emissiveFactor = {0.0, 0.0, 0.0};
+  }
+
+  ParseStringProperty(&material->alphaMode, err, o, "alphaMode",
+                      /* required */ false);
+  ParseNumberProperty(&material->alphaCutoff, err, o, "alphaCutoff",
+                      /* required */ false);
+  ParseBooleanProperty(&material->doubleSided, err, o, "doubleSided",
+                       /* required */ false);
+
+  {
+    json::const_iterator it = o.find("pbrMetallicRoughness");
+    if (it != o.end()) {
+      ParsePbrMetallicRoughness(&material->pbrMetallicRoughness, err,
+                                it.value());
+    }
+  }
+
+  {
+    json::const_iterator it = o.find("normalTexture");
+    if (it != o.end()) {
+      ParseNormalTextureInfo(&material->normalTexture, err, it.value());
+    }
+  }
+
+  {
+    json::const_iterator it = o.find("occlusionTexture");
+    if (it != o.end()) {
+      ParseOcclusionTextureInfo(&material->occlusionTexture, err, it.value());
+    }
+  }
+
+  {
+    json::const_iterator it = o.find("emissiveTexture");
+    if (it != o.end()) {
+      ParseTextureInfo(&material->emissiveTexture, err, it.value());
+    }
+  }
+
+  // Old code path. For backward compatibility, we still store material values
+  // as Parameter. This will create duplicated information for
+  // example(pbrMetallicRoughness), but should be neglible in terms of memory
+  // consumption.
+  // TODO(syoyo): Remove in the next major release.
   material->values.clear();
-  material->extensions.clear();
   material->additionalValues.clear();
 
   json::const_iterator it(o.begin());
@@ -3436,11 +3835,14 @@ static bool ParseMaterial(Material *material, std::string *err, const json &o) {
     } else {
       Parameter param;
       if (ParseParameterProperty(&param, err, o, it.key(), false)) {
-        material->additionalValues[it.key()] = param;
+        // names of materials have already been parsed. Putting it in this map
+        // doesn't correctly reflext the glTF specification
+        if (it.key() != "name") material->additionalValues[it.key()] = param;
       }
     }
   }
 
+  material->extensions.clear();
   ParseExtensionsProperty(&material->extensions, err, o);
   ParseExtrasProperty(&(material->extras), o);
 
@@ -3482,6 +3884,7 @@ static bool ParseAnimationChannel(AnimationChannel *channel, std::string *err,
   channel->sampler = samplerIndex;
   channel->target_node = targetIndex;
 
+  ParseExtensionsProperty(&channel->extensions, err, o);
   ParseExtrasProperty(&(channel->extras), o);
 
   return true;
@@ -3541,6 +3944,7 @@ static bool ParseAnimation(Animation *animation, std::string *err,
 
   ParseStringProperty(&animation->name, err, o, "name", false);
 
+  ParseExtensionsProperty(&animation->extensions, err, o);
   ParseExtrasProperty(&(animation->extras), o);
 
   return true;
@@ -3549,19 +3953,25 @@ static bool ParseAnimation(Animation *animation, std::string *err,
 static bool ParseSampler(Sampler *sampler, std::string *err, const json &o) {
   ParseStringProperty(&sampler->name, err, o, "name", false);
 
-  int minFilter = TINYGLTF_TEXTURE_FILTER_NEAREST_MIPMAP_LINEAR;
-  int magFilter = TINYGLTF_TEXTURE_FILTER_LINEAR;
+  int minFilter = -1;
+  int magFilter = -1;
   int wrapS = TINYGLTF_TEXTURE_WRAP_REPEAT;
   int wrapT = TINYGLTF_TEXTURE_WRAP_REPEAT;
+  int wrapR = TINYGLTF_TEXTURE_WRAP_REPEAT;
   ParseIntegerProperty(&minFilter, err, o, "minFilter", false);
   ParseIntegerProperty(&magFilter, err, o, "magFilter", false);
   ParseIntegerProperty(&wrapS, err, o, "wrapS", false);
   ParseIntegerProperty(&wrapT, err, o, "wrapT", false);
+  ParseIntegerProperty(&wrapR, err, o, "wrapR", false);  // tinygltf extension
+
+  // TODO(syoyo): Check the value is alloed one.
+  // (e.g. we allow 9728(NEAREST), but don't allow 9727)
 
   sampler->minFilter = minFilter;
   sampler->magFilter = magFilter;
   sampler->wrapS = wrapS;
   sampler->wrapT = wrapT;
+  sampler->wrapR = wrapR;
 
   ParseExtrasProperty(&(sampler->extras), o);
 
@@ -3615,6 +4025,18 @@ static bool ParsePerspectiveCamera(PerspectiveCamera *camera, std::string *err,
 
   ParseExtensionsProperty(&camera->extensions, err, o);
   ParseExtrasProperty(&(camera->extras), o);
+
+  // TODO(syoyo): Validate parameter values.
+
+  return true;
+}
+
+static bool ParseSpotLight(SpotLight *light, std::string *err, const json &o) {
+  ParseNumberProperty(&light->innerConeAngle, err, o, "innerConeAngle", false);
+  ParseNumberProperty(&light->outerConeAngle, err, o, "outerConeAngle", false);
+
+  ParseExtensionsProperty(&light->extensions, err, o);
+  ParseExtrasProperty(&light->extras, o);
 
   // TODO(syoyo): Validate parameter values.
 
@@ -3723,6 +4145,45 @@ static bool ParseCamera(Camera *camera, std::string *err, const json &o) {
   ParseExtensionsProperty(&camera->extensions, err, o);
   ParseExtrasProperty(&(camera->extras), o);
 
+  return true;
+}
+
+static bool ParseLight(Light *light, std::string *err, const json &o) {
+  if (!ParseStringProperty(&light->type, err, o, "type", true)) {
+    return false;
+  }
+
+  if (light->type == "spot") {
+    if (o.find("spot") == o.end()) {
+      if (err) {
+        std::stringstream ss;
+        ss << "Spot light description not found." << std::endl;
+        (*err) += ss.str();
+      }
+      return false;
+    }
+
+    const json &v = o.find("spot").value();
+    if (!v.is_object()) {
+      if (err) {
+        std::stringstream ss;
+        ss << "\"spot\" is not a JSON object." << std::endl;
+        (*err) += ss.str();
+      }
+      return false;
+    }
+
+    if (!ParseSpotLight(&light->spot, err, v.get<json>())) {
+      return false;
+    }
+  }
+
+  ParseStringProperty(&light->name, err, o, "name", false);
+  ParseNumberArrayProperty(&light->color, err, o, "color", false);
+  ParseNumberProperty(&light->range, err, o, "range", false);
+  ParseNumberProperty(&light->intensity, err, o, "intensity", false);
+  ParseExtensionsProperty(&light->extensions, err, o);
+  ParseExtrasProperty(&(light->extras), o);
   return true;
 }
 
@@ -4013,7 +4474,8 @@ bool TinyGLTF::LoadFromString(Model *model, std::string *err, std::string *warn,
           return false;
         }
 
-        auto bufferView = model->accessors[primitive.indices].bufferView;
+        auto bufferView =
+            model->accessors[size_t(primitive.indices)].bufferView;
         if (bufferView < 0 || size_t(bufferView) >= model->bufferViews.size()) {
           if (err) {
             (*err) += "accessor[" + std::to_string(primitive.indices) +
@@ -4022,7 +4484,7 @@ bool TinyGLTF::LoadFromString(Model *model, std::string *err, std::string *warn,
           return false;
         }
 
-        model->bufferViews[bufferView].target =
+        model->bufferViews[size_t(bufferView)].target =
             TINYGLTF_TARGET_ELEMENT_ARRAY_BUFFER;
         // we could optionally check if acessors' bufferView type is Scalar, as
         // it should be
@@ -4341,8 +4803,8 @@ bool TinyGLTF::LoadFromString(Model *model, std::string *err, std::string *warn,
       json::const_iterator it(root.begin());
       json::const_iterator itEnd(root.end());
       for (; it != itEnd; ++it) {
-        // parse KHR_lights_cmn extension
-        if ((it.key().compare("KHR_lights_cmn") == 0) &&
+        // parse KHR_lights_punctual extension
+        if ((it.key().compare("KHR_lights_punctual") == 0) &&
             it.value().is_object()) {
           const json &object = it.value();
           json::const_iterator itLight(object.find("lights"));
@@ -4588,7 +5050,7 @@ static void SerializeStringArrayProperty(const std::string &key,
 static bool ValueToJson(const Value &value, json *ret) {
   json obj;
   switch (value.Type()) {
-    case NUMBER_TYPE:
+    case REAL_TYPE:
       obj = json(value.Get<double>());
       break;
     case INT_TYPE:
@@ -4654,6 +5116,7 @@ static bool SerializeGltfBufferData(const std::vector<unsigned char> &data,
   return true;
 }
 
+#if 0  // FIXME(syoyo): not used. will be removed in the future release.
 static void SerializeParameterMap(ParameterMap &param, json &o) {
   for (ParameterMap::iterator paramIt = param.begin(); paramIt != param.end();
        ++paramIt) {
@@ -4682,6 +5145,7 @@ static void SerializeParameterMap(ParameterMap &param, json &o) {
     }
   }
 }
+#endif
 
 static void SerializeExtensionMap(ExtensionMap &extensions, json &o) {
   if (!extensions.size()) return;
@@ -4700,7 +5164,9 @@ static void SerializeExtensionMap(ExtensionMap &extensions, json &o) {
       if (!(extIt->first.empty())) {  // name should not be empty, but for sure
         // create empty object so that an extension name is still included in
         // json.
-        extMap[extIt->first] = json({});
+        extMap[extIt->first] =
+            json(std::initializer_list<
+                 nlohmann::detail::json_ref<nlohmann::basic_json<> > >());
       }
     }
   }
@@ -4762,6 +5228,8 @@ static void SerializeGltfAnimationChannel(AnimationChannel &channel, json &o) {
   if (channel.extras.Type() != NULL_TYPE) {
     SerializeValue("extras", channel.extras, o);
   }
+
+  SerializeExtensionMap(channel.extensions, o);
 }
 
 static void SerializeGltfAnimationSampler(AnimationSampler &sampler, json &o) {
@@ -4799,11 +5267,17 @@ static void SerializeGltfAnimation(Animation &animation, json &o) {
   if (animation.extras.Type() != NULL_TYPE) {
     SerializeValue("extras", animation.extras, o);
   }
+
+  SerializeExtensionMap(animation.extensions, o);
 }
 
 static void SerializeGltfAsset(Asset &asset, json &o) {
   if (!asset.generator.empty()) {
     SerializeStringProperty("generator", asset.generator, o);
+  }
+
+  if (!asset.copyright.empty()) {
+    SerializeStringProperty("copyright", asset.copyright, o);
   }
 
   if (!asset.version.empty()) {
@@ -4889,10 +5363,142 @@ static void SerializeGltfImage(Image &image, json &o) {
   SerializeExtensionMap(image.extensions, o);
 }
 
-static void SerializeGltfMaterial(Material &material, json &o) {
-  if (material.extras.Size()) SerializeValue("extras", material.extras, o);
-  SerializeExtensionMap(material.extensions, o);
+static void SerializeGltfTextureInfo(TextureInfo &texinfo, json &o) {
+  SerializeNumberProperty("index", texinfo.index, o);
 
+  if (texinfo.texCoord != 0) {
+    SerializeNumberProperty("texCoord", texinfo.texCoord, o);
+  }
+
+  if (texinfo.extras.Type() != NULL_TYPE) {
+    SerializeValue("extras", texinfo.extras, o);
+  }
+
+  SerializeExtensionMap(texinfo.extensions, o);
+}
+
+static void SerializeGltfNormalTextureInfo(NormalTextureInfo &texinfo,
+                                           json &o) {
+  SerializeNumberProperty("index", texinfo.index, o);
+
+  if (texinfo.texCoord != 0) {
+    SerializeNumberProperty("texCoord", texinfo.texCoord, o);
+  }
+
+  if (!TINYGLTF_DOUBLE_EQUAL(texinfo.scale, 1.0)) {
+    SerializeNumberProperty("scale", texinfo.scale, o);
+  }
+
+  if (texinfo.extras.Type() != NULL_TYPE) {
+    SerializeValue("extras", texinfo.extras, o);
+  }
+
+  SerializeExtensionMap(texinfo.extensions, o);
+}
+
+static void SerializeGltfOcclusionTextureInfo(OcclusionTextureInfo &texinfo,
+                                              json &o) {
+  SerializeNumberProperty("index", texinfo.index, o);
+
+  if (texinfo.texCoord != 0) {
+    SerializeNumberProperty("texCoord", texinfo.texCoord, o);
+  }
+
+  if (!TINYGLTF_DOUBLE_EQUAL(texinfo.strength, 1.0)) {
+    SerializeNumberProperty("strength", texinfo.strength, o);
+  }
+
+  if (texinfo.extras.Type() != NULL_TYPE) {
+    SerializeValue("extras", texinfo.extras, o);
+  }
+
+  SerializeExtensionMap(texinfo.extensions, o);
+}
+
+static void SerializeGltfPbrMetallicRoughness(PbrMetallicRoughness &pbr,
+                                              json &o) {
+  std::vector<double> default_baseColorFactor = {1.0, 1.0, 1.0, 1.0};
+  if (!Equals(pbr.baseColorFactor, default_baseColorFactor)) {
+    SerializeNumberArrayProperty<double>("baseColorFactor", pbr.baseColorFactor,
+                                         o);
+  }
+
+  if (!TINYGLTF_DOUBLE_EQUAL(pbr.metallicFactor, 1.0)) {
+    SerializeNumberProperty("metallicFactor", pbr.metallicFactor, o);
+  }
+
+  if (!TINYGLTF_DOUBLE_EQUAL(pbr.roughnessFactor, 1.0)) {
+    SerializeNumberProperty("roughnessFactor", pbr.roughnessFactor, o);
+  }
+
+  if (pbr.baseColorTexture.index > -1) {
+    json texinfo;
+    SerializeGltfTextureInfo(pbr.baseColorTexture, texinfo);
+    o["baseColorTexture"] = texinfo;
+  }
+
+  if (pbr.metallicRoughnessTexture.index > -1) {
+    json texinfo;
+    SerializeGltfTextureInfo(pbr.metallicRoughnessTexture, texinfo);
+    o["metallicRoughnessTexture"] = texinfo;
+  }
+
+  SerializeExtensionMap(pbr.extensions, o);
+
+  if (pbr.extras.Type() != NULL_TYPE) {
+    SerializeValue("extras", pbr.extras, o);
+  }
+}
+
+static void SerializeGltfMaterial(Material &material, json &o) {
+  if (material.name.size()) {
+    SerializeStringProperty("name", material.name, o);
+  }
+
+  // QUESTION(syoyo): Write material parameters regardless of its default value?
+
+  if (!TINYGLTF_DOUBLE_EQUAL(material.alphaCutoff, 0.5)) {
+    SerializeNumberProperty("alphaCutoff", material.alphaCutoff, o);
+  }
+
+  if (material.alphaMode.compare("OPAQUE") != 0) {
+    SerializeStringProperty("alphaMode", material.alphaMode, o);
+  }
+
+  o["doubleSided"] = json(material.doubleSided);
+
+  if (material.normalTexture.index > -1) {
+    json texinfo;
+    SerializeGltfNormalTextureInfo(material.normalTexture, texinfo);
+    o["normalTexture"] = texinfo;
+  }
+
+  if (material.occlusionTexture.index > -1) {
+    json texinfo;
+    SerializeGltfOcclusionTextureInfo(material.occlusionTexture, texinfo);
+    o["occlusionTexture"] = texinfo;
+  }
+
+  if (material.emissiveTexture.index > -1) {
+    json texinfo;
+    SerializeGltfTextureInfo(material.emissiveTexture, texinfo);
+    o["emissiveTexture"] = texinfo;
+  }
+
+  std::vector<double> default_emissiveFactor = {0.0, 0.0, 0.0};
+  if (!Equals(material.emissiveFactor, default_emissiveFactor)) {
+    SerializeNumberArrayProperty<double>("emissiveFactor",
+                                         material.emissiveFactor, o);
+  }
+
+  {
+    json pbrMetallicRoughness;
+    SerializeGltfPbrMetallicRoughness(material.pbrMetallicRoughness,
+                                      pbrMetallicRoughness);
+    o["pbrMetallicRoughness"] = pbrMetallicRoughness;
+  }
+
+#if 0  // legacy way. just for the record.
   if (material.values.size()) {
     json pbrMetallicRoughness;
     SerializeParameterMap(material.values, pbrMetallicRoughness);
@@ -4900,10 +5506,11 @@ static void SerializeGltfMaterial(Material &material, json &o) {
   }
 
   SerializeParameterMap(material.additionalValues, o);
+#else
 
-  if (material.name.size()) {
-    SerializeStringProperty("name", material.name, o);
-  }
+#endif
+
+  SerializeExtensionMap(material.extensions, o);
 
   if (material.extras.Type() != NULL_TYPE) {
     SerializeValue("extras", material.extras, o);
@@ -4973,10 +5580,23 @@ static void SerializeGltfMesh(Mesh &mesh, json &o) {
   }
 }
 
+static void SerializeSpotLight(SpotLight &spot, json &o) {
+  SerializeNumberProperty("innerConeAngle", spot.innerConeAngle, o);
+  SerializeNumberProperty("outerConeAngle", spot.outerConeAngle, o);
+  SerializeExtensionMap(spot.extensions, o);
+}
+
 static void SerializeGltfLight(Light &light, json &o) {
   if (!light.name.empty()) SerializeStringProperty("name", light.name, o);
+  SerializeNumberProperty("intensity", light.intensity, o);
+  SerializeNumberProperty("range", light.range, o);
   SerializeNumberArrayProperty("color", light.color, o);
   SerializeStringProperty("type", light.type, o);
+  if (light.type == "spot") {
+    json spot;
+    SerializeSpotLight(light.spot, spot);
+    o["spot"] = spot;
+  }
 }
 
 static void SerializeGltfNode(Node &node, json &o) {
@@ -5004,6 +5624,10 @@ static void SerializeGltfNode(Node &node, json &o) {
     SerializeNumberProperty<int>("camera", node.camera, o);
   }
 
+  if (node.weights.size() > 0) {
+    SerializeNumberArrayProperty<double>("weights", node.weights, o);
+  }
+
   if (node.extras.Type() != NULL_TYPE) {
     SerializeValue("extras", node.extras, o);
   }
@@ -5014,8 +5638,12 @@ static void SerializeGltfNode(Node &node, json &o) {
 }
 
 static void SerializeGltfSampler(Sampler &sampler, json &o) {
-  SerializeNumberProperty("magFilter", sampler.magFilter, o);
-  SerializeNumberProperty("minFilter", sampler.minFilter, o);
+  if (sampler.magFilter != -1) {
+    SerializeNumberProperty("magFilter", sampler.magFilter, o);
+  }
+  if (sampler.minFilter != -1) {
+    SerializeNumberProperty("minFilter", sampler.minFilter, o);
+  }
   SerializeNumberProperty("wrapR", sampler.wrapR, o);
   SerializeNumberProperty("wrapS", sampler.wrapS, o);
   SerializeNumberProperty("wrapT", sampler.wrapT, o);
@@ -5103,59 +5731,19 @@ static void SerializeGltfTexture(Texture &texture, json &o) {
   if (texture.source > -1) {
     SerializeNumberProperty("source", texture.source, o);
   }
+  if (texture.name.size()) {
+    SerializeStringProperty("name", texture.name, o);
+  }
   if (texture.extras.Type() != NULL_TYPE) {
     SerializeValue("extras", texture.extras, o);
   }
   SerializeExtensionMap(texture.extensions, o);
 }
 
-static bool WriteGltfFile(const std::string &output,
-                          const std::string &content) {
-  std::ofstream gltfFile(output.c_str());
-  if (!gltfFile.is_open()) return false;
-  gltfFile << content << std::endl;
-  return true;
-}
-
-static void WriteBinaryGltfFile(const std::string &output,
-                                const std::string &content) {
-  std::ofstream gltfFile(output.c_str(), std::ios::binary);
-
-  const std::string header = "glTF";
-  const int version = 2;
-  const int padding_size = content.size() % 4;
-
-  // 12 bytes for header, JSON content length, 8 bytes for JSON chunk info,
-  // padding
-  const int length = 12 + 8 + int(content.size()) + padding_size;
-
-  gltfFile.write(header.c_str(), header.size());
-  gltfFile.write(reinterpret_cast<const char *>(&version), sizeof(version));
-  gltfFile.write(reinterpret_cast<const char *>(&length), sizeof(length));
-
-  // JSON chunk info, then JSON data
-  const int model_length = int(content.size()) + padding_size;
-  const int model_format = 0x4E4F534A;
-  gltfFile.write(reinterpret_cast<const char *>(&model_length),
-                 sizeof(model_length));
-  gltfFile.write(reinterpret_cast<const char *>(&model_format),
-                 sizeof(model_format));
-  gltfFile.write(content.c_str(), content.size());
-
-  // Chunk must be multiplies of 4, so pad with spaces
-  if (padding_size > 0) {
-    const std::string padding = std::string(padding_size, ' ');
-    gltfFile.write(padding.c_str(), padding.size());
-  }
-}
-
-bool TinyGLTF::WriteGltfSceneToFile(Model *model, const std::string &filename,
-                                    bool embedImages = false,
-                                    bool embedBuffers = false,
-                                    bool prettyPrint = true,
-                                    bool writeBinary = false) {
-  json output;
-
+///
+/// Serialize all properties except buffers and images.
+///
+static void SerializeGltfModel(Model *model, json &o) {
   // ACCESSORS
   json accessors;
   for (unsigned int i = 0; i < model->accessors.size(); ++i) {
@@ -5163,7 +5751,7 @@ bool TinyGLTF::WriteGltfSceneToFile(Model *model, const std::string &filename,
     SerializeGltfAccessor(model->accessors[i], accessor);
     accessors.push_back(accessor);
   }
-  output["accessors"] = accessors;
+  o["accessors"] = accessors;
 
   // ANIMATIONS
   if (model->animations.size()) {
@@ -5175,14 +5763,256 @@ bool TinyGLTF::WriteGltfSceneToFile(Model *model, const std::string &filename,
         animations.push_back(animation);
       }
     }
-    output["animations"] = animations;
+    o["animations"] = animations;
   }
 
   // ASSET
   json asset;
   SerializeGltfAsset(model->asset, asset);
-  output["asset"] = asset;
+  o["asset"] = asset;
 
+  // BUFFERVIEWS
+  json bufferViews;
+  for (unsigned int i = 0; i < model->bufferViews.size(); ++i) {
+    json bufferView;
+    SerializeGltfBufferView(model->bufferViews[i], bufferView);
+    bufferViews.push_back(bufferView);
+  }
+  o["bufferViews"] = bufferViews;
+
+  // Extensions used
+  if (model->extensionsUsed.size()) {
+    SerializeStringArrayProperty("extensionsUsed", model->extensionsUsed, o);
+  }
+
+  // Extensions required
+  if (model->extensionsRequired.size()) {
+    SerializeStringArrayProperty("extensionsRequired",
+                                 model->extensionsRequired, o);
+  }
+
+  // MATERIALS
+  if (model->materials.size()) {
+    json materials;
+    for (unsigned int i = 0; i < model->materials.size(); ++i) {
+      json material;
+      SerializeGltfMaterial(model->materials[i], material);
+      materials.push_back(material);
+    }
+    o["materials"] = materials;
+  }
+
+  // MESHES
+  if (model->meshes.size()) {
+    json meshes;
+    for (unsigned int i = 0; i < model->meshes.size(); ++i) {
+      json mesh;
+      SerializeGltfMesh(model->meshes[i], mesh);
+      meshes.push_back(mesh);
+    }
+    o["meshes"] = meshes;
+  }
+
+  // NODES
+  if (model->nodes.size()) {
+    json nodes;
+    for (unsigned int i = 0; i < model->nodes.size(); ++i) {
+      json node;
+      SerializeGltfNode(model->nodes[i], node);
+      nodes.push_back(node);
+    }
+    o["nodes"] = nodes;
+  }
+
+  // SCENE
+  if (model->defaultScene > -1) {
+    SerializeNumberProperty<int>("scene", model->defaultScene, o);
+  }
+
+  // SCENES
+  if (model->scenes.size()) {
+    json scenes;
+    for (unsigned int i = 0; i < model->scenes.size(); ++i) {
+      json currentScene;
+      SerializeGltfScene(model->scenes[i], currentScene);
+      scenes.push_back(currentScene);
+    }
+    o["scenes"] = scenes;
+  }
+
+  // SKINS
+  if (model->skins.size()) {
+    json skins;
+    for (unsigned int i = 0; i < model->skins.size(); ++i) {
+      json skin;
+      SerializeGltfSkin(model->skins[i], skin);
+      skins.push_back(skin);
+    }
+    o["skins"] = skins;
+  }
+
+  // TEXTURES
+  if (model->textures.size()) {
+    json textures;
+    for (unsigned int i = 0; i < model->textures.size(); ++i) {
+      json texture;
+      SerializeGltfTexture(model->textures[i], texture);
+      textures.push_back(texture);
+    }
+    o["textures"] = textures;
+  }
+
+  // SAMPLERS
+  if (model->samplers.size()) {
+    json samplers;
+    for (unsigned int i = 0; i < model->samplers.size(); ++i) {
+      json sampler;
+      SerializeGltfSampler(model->samplers[i], sampler);
+      samplers.push_back(sampler);
+    }
+    o["samplers"] = samplers;
+  }
+
+  // CAMERAS
+  if (model->cameras.size()) {
+    json cameras;
+    for (unsigned int i = 0; i < model->cameras.size(); ++i) {
+      json camera;
+      SerializeGltfCamera(model->cameras[i], camera);
+      cameras.push_back(camera);
+    }
+    o["cameras"] = cameras;
+  }
+
+  // EXTENSIONS
+  SerializeExtensionMap(model->extensions, o);
+
+  // LIGHTS as KHR_lights_cmn
+  if (model->lights.size()) {
+    json lights;
+    for (unsigned int i = 0; i < model->lights.size(); ++i) {
+      json light;
+      SerializeGltfLight(model->lights[i], light);
+      lights.push_back(light);
+    }
+    json khr_lights_cmn;
+    khr_lights_cmn["lights"] = lights;
+    json ext_j;
+
+    if (o.find("extensions") != o.end()) {
+      ext_j = o["extensions"];
+    }
+
+    ext_j["KHR_lights_punctual"] = khr_lights_cmn;
+
+    o["extensions"] = ext_j;
+  }
+
+  // EXTRAS
+  if (model->extras.Type() != NULL_TYPE) {
+    SerializeValue("extras", model->extras, o);
+  }
+}
+
+static bool WriteGltfStream(std::ostream &stream, const std::string &content) {
+  stream << content << std::endl;
+  return true;
+}
+
+static bool WriteGltfFile(const std::string &output,
+                          const std::string &content) {
+  std::ofstream gltfFile(output.c_str());
+  if (!gltfFile.is_open()) return false;
+  return WriteGltfStream(gltfFile, content);
+}
+
+static void WriteBinaryGltfStream(std::ostream &stream,
+                                  const std::string &content) {
+  const std::string header = "glTF";
+  const int version = 2;
+  const int padding_size = content.size() % 4;
+
+  // 12 bytes for header, JSON content length, 8 bytes for JSON chunk info,
+  // padding
+  const int length = 12 + 8 + int(content.size()) + padding_size;
+
+  stream.write(header.c_str(), std::streamsize(header.size()));
+  stream.write(reinterpret_cast<const char *>(&version), sizeof(version));
+  stream.write(reinterpret_cast<const char *>(&length), sizeof(length));
+
+  // JSON chunk info, then JSON data
+  const int model_length = int(content.size()) + padding_size;
+  const int model_format = 0x4E4F534A;
+  stream.write(reinterpret_cast<const char *>(&model_length),
+               sizeof(model_length));
+  stream.write(reinterpret_cast<const char *>(&model_format),
+               sizeof(model_format));
+  stream.write(content.c_str(), std::streamsize(content.size()));
+
+  // Chunk must be multiplies of 4, so pad with spaces
+  if (padding_size > 0) {
+    const std::string padding = std::string(size_t(padding_size), ' ');
+    stream.write(padding.c_str(), std::streamsize(padding.size()));
+  }
+}
+
+static void WriteBinaryGltfFile(const std::string &output,
+                                const std::string &content) {
+  std::ofstream gltfFile(output.c_str(), std::ios::binary);
+  WriteBinaryGltfStream(gltfFile, content);
+}
+
+bool TinyGLTF::WriteGltfSceneToStream(Model *model, std::ostream &stream,
+                                      bool prettyPrint = true,
+                                      bool writeBinary = false) {
+  json output;
+
+  /// Serialize all properties except buffers and images.
+  SerializeGltfModel(model, output);
+
+  // BUFFERS
+  std::vector<std::string> usedUris;
+  json buffers;
+  for (unsigned int i = 0; i < model->buffers.size(); ++i) {
+    json buffer;
+    SerializeGltfBuffer(model->buffers[i], buffer);
+    buffers.push_back(buffer);
+  }
+  output["buffers"] = buffers;
+
+  // IMAGES
+  if (model->images.size()) {
+    json images;
+    for (unsigned int i = 0; i < model->images.size(); ++i) {
+      json image;
+
+      std::string dummystring = "";
+      // UpdateImageObject need baseDir but only uses it if embededImages is
+      // enable, since we won't write separte images when writing to a stream we
+      // use a dummystring
+      UpdateImageObject(model->images[i], dummystring, int(i), false,
+                        &this->WriteImageData, this->write_image_user_data_);
+      SerializeGltfImage(model->images[i], image);
+      images.push_back(image);
+    }
+    output["images"] = images;
+  }
+
+  if (writeBinary) {
+    WriteBinaryGltfStream(stream, output.dump());
+  } else {
+    WriteGltfStream(stream, output.dump(prettyPrint ? 2 : -1));
+  }
+
+  return true;
+}
+
+bool TinyGLTF::WriteGltfSceneToFile(Model *model, const std::string &filename,
+                                    bool embedImages = false,
+                                    bool embedBuffers = false,
+                                    bool prettyPrint = true,
+                                    bool writeBinary = false) {
+  json output;
   std::string defaultBinFilename = GetBaseFilename(filename);
   std::string defaultBinFileExt = ".bin";
   std::string::size_type pos =
@@ -5195,6 +6025,8 @@ bool TinyGLTF::WriteGltfSceneToFile(Model *model, const std::string &filename,
   if (baseDir.empty()) {
     baseDir = "./";
   }
+  /// Serialize all properties except buffers and images.
+  SerializeGltfModel(model, output);
 
   // BUFFERS
   std::vector<std::string> usedUris;
@@ -5234,27 +6066,6 @@ bool TinyGLTF::WriteGltfSceneToFile(Model *model, const std::string &filename,
   }
   output["buffers"] = buffers;
 
-  // BUFFERVIEWS
-  json bufferViews;
-  for (unsigned int i = 0; i < model->bufferViews.size(); ++i) {
-    json bufferView;
-    SerializeGltfBufferView(model->bufferViews[i], bufferView);
-    bufferViews.push_back(bufferView);
-  }
-  output["bufferViews"] = bufferViews;
-
-  // Extensions used
-  if (model->extensionsUsed.size()) {
-    SerializeStringArrayProperty("extensionsUsed", model->extensionsUsed,
-                                 output);
-  }
-
-  // Extensions required
-  if (model->extensionsRequired.size()) {
-    SerializeStringArrayProperty("extensionsRequired",
-                                 model->extensionsRequired, output);
-  }
-
   // IMAGES
   if (model->images.size()) {
     json images;
@@ -5267,128 +6078,6 @@ bool TinyGLTF::WriteGltfSceneToFile(Model *model, const std::string &filename,
       images.push_back(image);
     }
     output["images"] = images;
-  }
-
-  // MATERIALS
-  if (model->materials.size()) {
-    json materials;
-    for (unsigned int i = 0; i < model->materials.size(); ++i) {
-      json material;
-      SerializeGltfMaterial(model->materials[i], material);
-      materials.push_back(material);
-    }
-    output["materials"] = materials;
-  }
-
-  // MESHES
-  if (model->meshes.size()) {
-    json meshes;
-    for (unsigned int i = 0; i < model->meshes.size(); ++i) {
-      json mesh;
-      SerializeGltfMesh(model->meshes[i], mesh);
-      meshes.push_back(mesh);
-    }
-    output["meshes"] = meshes;
-  }
-
-  // NODES
-  if (model->nodes.size()) {
-    json nodes;
-    for (unsigned int i = 0; i < model->nodes.size(); ++i) {
-      json node;
-      SerializeGltfNode(model->nodes[i], node);
-      nodes.push_back(node);
-    }
-    output["nodes"] = nodes;
-  }
-
-  // SCENE
-  if (model->defaultScene > -1) {
-    SerializeNumberProperty<int>("scene", model->defaultScene, output);
-  }
-
-  // SCENES
-  if (model->scenes.size()) {
-    json scenes;
-    for (unsigned int i = 0; i < model->scenes.size(); ++i) {
-      json currentScene;
-      SerializeGltfScene(model->scenes[i], currentScene);
-      scenes.push_back(currentScene);
-    }
-    output["scenes"] = scenes;
-  }
-
-  // SKINS
-  if (model->skins.size()) {
-    json skins;
-    for (unsigned int i = 0; i < model->skins.size(); ++i) {
-      json skin;
-      SerializeGltfSkin(model->skins[i], skin);
-      skins.push_back(skin);
-    }
-    output["skins"] = skins;
-  }
-
-  // TEXTURES
-  if (model->textures.size()) {
-    json textures;
-    for (unsigned int i = 0; i < model->textures.size(); ++i) {
-      json texture;
-      SerializeGltfTexture(model->textures[i], texture);
-      textures.push_back(texture);
-    }
-    output["textures"] = textures;
-  }
-
-  // SAMPLERS
-  if (model->samplers.size()) {
-    json samplers;
-    for (unsigned int i = 0; i < model->samplers.size(); ++i) {
-      json sampler;
-      SerializeGltfSampler(model->samplers[i], sampler);
-      samplers.push_back(sampler);
-    }
-    output["samplers"] = samplers;
-  }
-
-  // CAMERAS
-  if (model->cameras.size()) {
-    json cameras;
-    for (unsigned int i = 0; i < model->cameras.size(); ++i) {
-      json camera;
-      SerializeGltfCamera(model->cameras[i], camera);
-      cameras.push_back(camera);
-    }
-    output["cameras"] = cameras;
-  }
-
-  // EXTENSIONS
-  SerializeExtensionMap(model->extensions, output);
-
-  // LIGHTS as KHR_lights_cmn
-  if (model->lights.size()) {
-    json lights;
-    for (unsigned int i = 0; i < model->lights.size(); ++i) {
-      json light;
-      SerializeGltfLight(model->lights[i], light);
-      lights.push_back(light);
-    }
-    json khr_lights_cmn;
-    khr_lights_cmn["lights"] = lights;
-    json ext_j;
-
-    if (output.find("extensions") != output.end()) {
-      ext_j = output["extensions"];
-    }
-
-    ext_j["KHR_lights_cmn"] = khr_lights_cmn;
-
-    output["extensions"] = ext_j;
-  }
-
-  // EXTRAS
-  if (model->extras.Type() != NULL_TYPE) {
-    SerializeValue("extras", model->extras, output);
   }
 
   if (writeBinary) {
