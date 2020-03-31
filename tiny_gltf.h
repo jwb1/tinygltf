@@ -1559,7 +1559,10 @@ class TinyGLTF {
 #undef NOMINMAX
 #endif
 */
+// Maybe windows.h is already included.
+#ifndef _WINDOWS_
 extern "C" unsigned long ExpandEnvironmentStringsA(const char* lpSrc, char* lpDst, unsigned long nSize);
+#endif
 
 #if defined(__GLIBCXX__)  // mingw
 
