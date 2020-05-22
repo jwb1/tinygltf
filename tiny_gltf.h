@@ -1561,6 +1561,8 @@ class TinyGLTF {
 */
 // Maybe windows.h is already included.
 #ifndef _WINDOWS_
+#define CP_UTF8 65001
+extern "C" int MultiByteToWideChar(unsigned int CodePage, unsigned long dwFlags, const char* lpMultiByteStr, int cbMultiByte, wchar_t* lpWideCharStr, int cchWideChar);
 extern "C" unsigned long ExpandEnvironmentStringsA(const char* lpSrc, char* lpDst, unsigned long nSize);
 #endif
 
