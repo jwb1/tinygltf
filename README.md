@@ -19,6 +19,8 @@ If you are looking for old, C++03 version, please use `devel-picojson` branch.
 
 [![Build status](https://ci.appveyor.com/api/projects/status/warngenu9wjjhlm8?svg=true)](https://ci.appveyor.com/project/syoyo/tinygltf)
 
+![C/C++ CI](https://github.com/syoyo/tinygltf/workflows/C/C++%20CI/badge.svg)
+
 ## Features
 
 * Written in portable C++. C++-11 with STL dependency only.
@@ -83,6 +85,7 @@ In extension(`ExtensionMap`), JSON number value is parsed as int or float(number
 * [QuickLook GLTF](https://github.com/toshiks/glTF-quicklook) - quicklook plugin for macos. Also SceneKit wrapper for tinygltf.
 * [GlslViewer](https://github.com/patriciogonzalezvivo/glslViewer) - live GLSL coding for MacOS and Linux
 * [Vulkan-Samples](https://github.com/KhronosGroup/Vulkan-Samples) - The Vulkan Samples is collection of resources to help you develop optimized Vulkan applications.
+* [TDME2](https://github.com/andreasdr/tdme2) - TDME2 - ThreeDeeMiniEngine2 is a lightweight 3D engine including tools suited for 3D game development using C++11
 * Your projects here! (Please send PR)
 
 ## TODOs
