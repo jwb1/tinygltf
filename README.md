@@ -3,7 +3,7 @@
 `TinyGLTF` is a header only C++11 glTF 2.0 https://github.com/KhronosGroup/glTF library.
 
 `TinyGLTF` uses Niels Lohmann's json library(https://github.com/nlohmann/json), so now it requires C++11 compiler.
-If you are looking for old, C++03 version, please use `devel-picojson` branch.
+If you are looking for old, C++03 version, please use `devel-picojson` branch(but not maintained anymore).
 
 ## Status
 
@@ -12,6 +12,10 @@ If you are looking for old, C++03 version, please use `devel-picojson` branch.
  - v2.2.0 release(Support loading 16bit PNG. Sparse accessor support)
  - v2.1.0 release(Draco support)
  - v2.0.0 release(22 Aug, 2018)!
+
+### Branches
+
+* `sajson` : Use sajson to parse JSON. Parsing only but faster compile time(2x reduction compared to json.hpp and RapidJson)
 
 ## Builds
 
@@ -86,6 +90,7 @@ In extension(`ExtensionMap`), JSON number value is parsed as int or float(number
 * [GlslViewer](https://github.com/patriciogonzalezvivo/glslViewer) - live GLSL coding for MacOS and Linux
 * [Vulkan-Samples](https://github.com/KhronosGroup/Vulkan-Samples) - The Vulkan Samples is collection of resources to help you develop optimized Vulkan applications.
 * [TDME2](https://github.com/andreasdr/tdme2) - TDME2 - ThreeDeeMiniEngine2 is a lightweight 3D engine including tools suited for 3D game development using C++11
+* [SanityEngine](https://github.com/DethRaid/SanityEngine) - A C++/D3D12 renderer focused on the personal and proessional development of its developer
 * Your projects here! (Please send PR)
 
 ## TODOs
@@ -150,6 +155,10 @@ if (!ret) {
   return -1;
 }
 ```
+
+#### Loader options
+
+* `TinyGLTF::SetPreserveimageChannels(bool onoff)`. `true` to preserve image channels as stored in image file for loaded image. `false` by default for backward compatibility(image channels are widen to `RGBA` 4 channels). Effective only when using builtin image loader(STB image loader).
 
 ## Compile options
 
