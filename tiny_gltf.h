@@ -7481,7 +7481,7 @@ static void SerializeGltfModel(Model *model, json &o) {
   }
 
   // Extensions used
-  if (model->extensionsUsed.size()) {
+  if (extensionsUsed.size()) {
     SerializeStringArrayProperty("extensionsUsed", extensionsUsed, o);
   }
 
