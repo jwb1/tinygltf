@@ -4,7 +4,7 @@
 //
 // The MIT License (MIT)
 //
-// Copyright (c) 2015 - 2020 Syoyo Fujita, Aurélien Chatelain and many
+// Copyright (c) 2015 - Present Syoyo Fujita, Aurélien Chatelain and many
 // contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -298,7 +298,7 @@ class Value {
 
   DEFAULT_METHODS(Value)
 
-  char Type() const { return static_cast<const char>(type_); }
+  char Type() const { return static_cast<char>(type_); }
 
   bool IsBool() const { return (type_ == BOOL_TYPE); }
 
@@ -1071,7 +1071,7 @@ struct Buffer {
 };
 
 struct Asset {
-  std::string version;  // required
+  std::string version = "2.0";  // required
   std::string generator;
   std::string minVersion;
   std::string copyright;
@@ -1538,11 +1538,13 @@ class TinyGLTF {
 #ifndef TINYGLTF_USE_RAPIDJSON
 #include "json.hpp"
 #else
+#ifndef TINYGLTF_NO_INCLUDE_RAPIDJSON
 #include "document.h"
 #include "prettywriter.h"
 #include "rapidjson.h"
 #include "stringbuffer.h"
 #include "writer.h"
+#endif
 #endif
 #endif
 
@@ -4480,6 +4482,7 @@ static bool GetAttributeForAllPoints(uint32_t componentType, draco::Mesh *mesh,
 static bool ParseDracoExtension(Primitive *primitive, Model *model,
                                 std::string *err,
                                 const Value &dracoExtensionValue) {
+  (void)err;
   auto bufferViewValue = dracoExtensionValue.Get("bufferView");
   if (!bufferViewValue.IsInt()) return false;
   auto attributesValue = dracoExtensionValue.Get("attributes");
@@ -4540,7 +4543,6 @@ static bool ParseDracoExtension(Primitive *primitive, Model *model,
 
     int dracoAttributeIndex = attribute.second.Get<int>();
     const auto pAttribute = mesh->GetAttributeByUniqueId(dracoAttributeIndex);
-    const auto pBuffer = pAttribute->buffer();
     const auto componentType =
         model->accessors[primitiveAttribute->second].componentType;
 
@@ -6770,9 +6772,14 @@ static void SerializeGltfAsset(Asset &asset, json &o) {
     SerializeStringProperty("copyright", asset.copyright, o);
   }
 
-  if (!asset.version.empty()) {
-    SerializeStringProperty("version", asset.version, o);
+  if (asset.version.empty()) {
+    // Just in case
+    // `version` must be defined
+    asset.version = "2.0";
   }
+
+  // TODO(syoyo): Do we need to check if `version` is greater or equal to 2.0?
+  SerializeStringProperty("version", asset.version, o);
 
   if (asset.extras.Keys().size()) {
     SerializeValue("extras", asset.extras, o);
